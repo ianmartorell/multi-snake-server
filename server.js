@@ -8,49 +8,195 @@ const app = express();
 const server = http.Server(app);
 const io = new SocketIO(server);
 const port = process.env.PORT || 3000;
-const users = [];
+let players = [];
 const sockets = {};
+
+const WIDTH = 8;
+const HEIGHT = 8;
+const COLORS = {
+  EMPTY: [0, 0, 0],
+  PLAYERS: [
+    [230, 25, 75],
+    [60, 180, 75],
+    [255, 225, 25],
+    [0, 130, 200],
+    [245, 130, 48],
+  ],
+};
+const STARTING_POSITIONS = [
+  [1, 1],
+  [6, 1],
+  [6, 7],
+  [1, 7],
+];
+const STARTING_DIRECTIONS = [
+  'down',
+  'down',
+  'up',
+  'up',
+];
+const _ = COLORS.EMPTY;
+const TICK_DELAY = 500;
+
+let state = 'WAITING';
+const EMPTY = [
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+  _, _, _, _, _, _, _, _,
+];
+let positions;
 
 app.use(compression({}));
 
+const isConnected = (id) => getPlayerIndex(id) > -1;
+const getPlayerIndex = (id) => {
+  return players.findIndex(player => player.id === id);
+}
+
 io.on('connection', (socket) => {
-    let currentUser = {
-        id: socket.id,
-        nick: socket.resinId
+    const currentPlayer = {
+        id: socket.handshake.query.id,
+        nextDirection: [],
     };
 
-    if (findIndex(users, currentUser.id) > -1) {
-        console.log('[INFO] User ID is already connected, kicking.');
+    console.log('players', players);
+    if (isConnected(currentPlayer.id)) {
+        console.log(`[INFO] Player ${currentPlayer.id} is already connected, kicking.`);
         socket.disconnect();
     } else {
-        console.log('[INFO] User ' + currentUser.nick + ' connected!');
-        sockets[currentUser.id] = socket;
-        users.push(currentUser);
-        io.emit('userJoin', { nick: currentUser.nick });
-        console.log('[INFO] Total users: ' + users.length);
+        console.log(`[INFO] Player ${currentPlayer.id} connected!`);
+        sockets[currentPlayer.id] = socket;
+        players.push({ id: socket.handshake.query.id, nextDirection: [] });
+        io.emit('playerJoin', { id: currentPlayer.id });
+        console.log('[INFO] Total players: ' + players.length);
     }
 
-    socket.on('ding', () => {
-        socket.emit('dong');
-    });
-
     socket.on('disconnect', () => {
-        if (findIndex(users, currentUser.id) > -1) users.splice(findIndex(users, currentUser.id), 1);
-        console.log('[INFO] User ' + currentUser.nick + ' disconnected!');
-        socket.broadcast.emit('userDisconnect', {nick: currentUser.nick});
+      const index = getPlayerIndex(currentPlayer.id);
+        if (index > -1) {
+          players.splice(index, 1);
+        }
+        console.log(`[INFO] Player ${currentPlayer.id} disconnected!`);
+        socket.broadcast.emit('playerDisconnect', { id: currentPlayer.id });
     });
 
-    // socket.on('userChat', (data) => {
-    //     let _nick = sanitizeString(data.nick);
-    //     let _message = sanitizeString(data.message);
-    //     let date = new Date();
-    //     let time = ("0" + date.getHours()).slice(-2) + ("0" + date.getMinutes()).slice(-2);
-
-    //     console.log('[CHAT] [' + time + '] ' + _nick + ': ' + _message);
-    //     socket.broadcast.emit('serverSendUserChat', {nick: _nick, message: _message});
-    // });
+    socket.on('directionChange', (data) => {
+      const index = getPlayerIndex(data.id);
+      players[index].nextDirection.push(data.direction);
+    });
 });
+
+const positionToIdx = ([ x, y ]) => {
+	if (x < 0 || x >= WIDTH) {
+		throw new Error(`x is out of bounds: ${x}`);
+	}
+	if (y < 0 || y >= HEIGHT) {
+		throw new Error(`y is out of bounds: ${y}`);
+	}
+	return x + WIDTH * y;
+};
+
+const offScreen = (pos) => {
+	if (pos[0] < 0 || pos[0] >= WIDTH) return true;
+	if (pos[1] < 0 || pos[1] >= HEIGHT) return true;
+	return false;
+};
+
+const isOccupied = (pos) => {
+  return positions[positionToIdx(pos)] !== COLORS.EMPTY;
+}
+
+const movePlayer = (player) => {
+  const newPlayer = Object.assign({}, player);
+	newPlayer.lastDirection = newPlayer.nextDirection.shift() || newPlayer.lastDirection;
+	switch(newPlayer.lastDirection) {
+		case 'up':
+      newPlayer.position = [player.position[0], player.position[1] - 1];
+      break;
+    case 'click':
+		case 'down':
+      newPlayer.position = [player.position[0], player.position[1] + 1];
+      break;
+		case 'left':
+      newPlayer.position = [player.position[0] - 1, player.position[1]];
+      break;
+		case 'right':
+      newPlayer.position = [player.position[0] + 1, player.position[1]];
+      break;
+	}
+  return newPlayer;
+};
+
+const startLobbyLoop = () => {
+  const waitingForPlayersHandle = setInterval(() => {
+    if (players.length > 1) {
+      clearInterval(waitingForPlayersHandle);
+      restartGame();
+    }
+  }, TICK_DELAY);
+};
+
+const restartGame = () => {
+  // Clear map and paint players' starting positions
+  positions = [...EMPTY];
+  players = players.map((player, index) => {
+    const position = STARTING_POSITIONS[index];
+    positions[positionToIdx(position)] = COLORS.PLAYERS[index];
+    return {
+      ...player,
+      position,
+      color: COLORS.PLAYERS[index],
+      nextDirection: [],
+      lastDirection: STARTING_DIRECTIONS[index],
+      alive: true,
+    }
+  })
+  console.log('players', players);
+	startGameLoop();
+};
+
+let tickIntervalHandle;
+const startGameLoop = () => {
+	clearInterval(tickIntervalHandle);
+	tickIntervalHandle = setInterval(tick, TICK_DELAY);
+	state = 'RUNNING';
+};
+
+const tick = () => {
+  players = players.map(player => {
+    if (!player.alive) {
+      return player;
+    }
+    const newPlayer = movePlayer(player);
+    if (offScreen(newPlayer.position) || isOccupied(newPlayer.position)) {
+      newPlayer.alive = false;
+    } else {
+      console.log(positions);
+      positions[positionToIdx(newPlayer.position)] = newPlayer.color;
+    }
+    return newPlayer;
+  });
+  console.log(players);
+  const alivePlayers = players.filter(player => player.alive);
+  if (alivePlayers.length <= 1) {
+      const winner = players.find(player => player.alive);
+      clearInterval(tickIntervalHandle);
+      io.emit('gameEnd', winner && winner.id);
+      setTimeout(startLobbyLoop, 5000);
+  }
+  io.emit('tick', { positions, players });
+  // Object.keys(sockets).forEach((socket) => {
+  //   socket.emit('tick', { positions, players });
+  // });
+};
+
 
 server.listen(port, () => {
     console.log('Listening on *:' + port);
+    startLobbyLoop();
 });
