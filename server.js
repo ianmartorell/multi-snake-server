@@ -50,6 +50,7 @@ const EMPTY = [
   _, _, _, _, _, _, _, _,
 ];
 let positions;
+let lastManStanding;
 
 app.use(compression({}));
 
@@ -175,18 +176,16 @@ const tick = () => {
     const newPlayer = movePlayer(player);
     if (offScreen(newPlayer.position) || isOccupied(newPlayer.position)) {
       newPlayer.alive = false;
+      lastManStanding = newPlayer.id;
     } else {
-      console.log(positions);
       positions[positionToIdx(newPlayer.position)] = newPlayer.color;
     }
     return newPlayer;
   });
   console.log(players);
-  const alivePlayers = players.filter(player => player.alive);
-  if (alivePlayers.length <= 1) {
-      const winner = players.find(player => player.alive);
+  if (players.every(player => !player.alive)) {
       clearInterval(tickIntervalHandle);
-      io.emit('gameEnd', winner && winner.id);
+      io.emit('gameEnd', lastManStanding);
       setTimeout(startLobbyLoop, 5000);
   }
   io.emit('tick', { positions, players });
